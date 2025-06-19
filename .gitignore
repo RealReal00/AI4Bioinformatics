@@ -4,3 +4,11 @@ __pycache__/
 *.pyd
 .vscode/
 .env
+
+# Ignora tutti i file .csv e .h5 ovunque
+*.csv
+*.h5
+
+# Ma NON ignorare quelli dentro la cartella Experiments/
+!Experiments/**/*.csv
+!Experiments/**/*.h5
