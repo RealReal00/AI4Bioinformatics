@@ -74,13 +74,16 @@ L'obiettivo è calcolare la probabilità del percorso temporale osservato per ci
 
   ### Analisi Visiva: Kaplan-Meier
   - Plot 1:
+  ![alt text](kaplain-meir_1_1.png)  
   Le curve High Risk vs Low Risk si separano visibilmente.
 
   La curva blu (alto rischio) decresce più rapidamente, come atteso.
 
   Il log-rank test p-value = 0.0314 indica che la separazione tra i due gruppi è statisticamente significativa (p < 0.05), anche se moderata.
 
-  - Plot 2:
+  - Plot 2:  
+  ![  ](keplein_meir_1_2.png)  
+
   La separazione tra gruppi è ancora più netta.
 
   La curva arancione (low risk) resta elevata per più tempo.
@@ -128,7 +131,8 @@ L'obiettivo è calcolare la probabilità del percorso temporale osservato per ci
   La coerenza tra training e validazione segnala un training ben bilanciato, con un generalizzazione migliore rispetto al primo esperimento, che mostrava chiari segni di overfitting, ma non si può ignorare che le loss crescono nel test set, suggerendo un overfitting moderato
 
   ### Analisi Visiva: Kaplan-Meier
-  - Plot 1
+  - Plot 1:  
+
   Le curve di sopravvivenza per alto rischio (blu) e basso rischio (arancione) risultano distinte visivamente, in linea con le predizioni del modello.
 
   Il log-rank p-value = 0.0754 indica una separazione quasi significativa statisticamente (soglia p = 0.05), suggerendo che il modello ha appreso una distinzione rilevante tra i gruppi.
@@ -480,3 +484,114 @@ QUINDI
 
 Se si può scegliere una sola modalità, Genomics è la più potente in questo dataset.
 Ma l’integrazione multimodale offre robustezza e deve essere preferita se disponibile.  
+
+
+## ESPERIMENTO USANDO MCAT CON ALPHA=0, BIN=4, WSI + GENOMICS  
+- IPERPARAMETRI USATI  
+| Parametro            | Valore | Descrizione                                               |
+| -------------------- | ------ | --------------------------------------------------------- |
+| `input_dim`          | 1024   | Dimensione dell'input visivo (feature patch)              |
+| `genomics_input_dim` | 19962  | Dimensione dell'input genomico                            |
+| `hidden_dim`         | 256    | Dimensione dello spazio latente interno                   |
+| `n_heads`            | 8      | Numero di teste nell'attenzione multi-head                |
+| `n_layers`           | 2      | Numero di layer nel Transformer                           |
+| `dropout`            | 0.1    | Probabilità di dropout per la regolarizzazione            |
+| `output_dim`         | 4      | Numero di classi/bins temporali (discretizzazione output) |
+| `max_patches`        | 4096   | Numero massimo di patch visive per paziente               |
+
+| split     | checkpoint |   c-index | NLL-loss |
+| --------- | ---------- | --------: | -------: |
+| **train** | *best*     | **0,706** |    274,7 |
+| **val**   | *best*     | **0,627** |    106,9 |
+| **test**  | *best*     | **0,608** |    113,4 |  
+(I valori della “last epoch” coincidono: il modello migliore è anche l’ultimo salvato).  
+
+## Osservazioni
+Generalizzazione
+Il c-index cala di ~0,08 dal train al validation e di ~0,02 dal validation al test.
+→ C’è un inizio di over-fitting, ma non drammatico.
+
+Prestazioni assolute
+Un 0,61 di c-index non è male considerano che stiamo usando un MCAT semplificato.  
+
+Curve di Kaplan–Meier
+La separazione fra gruppi “Low” e “High” è visivamente netta, tuttavia il p-value del log-rank ≈ 0,10 non raggiunge la soglia convenzionale (p < 0,05).  
+
+
+
+
+***Motivazione della versione lite***  
+| Dimensione                  | **MCAT-full**                                                                                                   | **MCAT-lite**                                                                                                                             | Motivazione della scelta lite                                                                                                 |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Cross-modal interaction** | **Co-attention esplicita** 〈 Q<sub>gen</sub>, K/V<sub>wsi</sub> 〉 con *pre-gate* (filtra interazioni rumorose). | **Self-attention condivisa**: token genomico e token patch competono nello **stesso** Transformer; le interazioni nascono implicitamente. | Manteniamo lo scambio informativo senza dover implementare **matrice di co-attenzione** + gating.                             |
+| **Numero di encoder**       | **Due** blocchi Transformer indipendenti (T<sub>H</sub>, T<sub>G</sub>).                                        | **Uno** solo, condiviso.                                                                                                                  | Riduciamo complessità e rischio di overfitting con dati TCGA-BRCA relativamente piccoli.                                      |
+| **Tokenizzazione genomica** | **Pathway-level** (decine ↔ centinaia di token); serve pos-embedding “gene-aware”.                              | **Singolo token** (“gene summary”) calcolato con 2 FC + ReLU.                                                                             | In assenza di annotazioni pathway affidabili nel dataset fornito, un embedding globale evita ingegneria biologica extra.      |
+| **Pooling finale**          | Due **Global Attention Pooling** (ρ<sub>H</sub>, ρ<sub>G</sub>) → concatenazione.                               | Un semplice vettore **\[CLS]** (già presente nel Transformer)                                                                             | Uguale capacità predittiva con meno teste da addestrare.                                                                      |
+| **Componenti extra**        | *Pre-gate* + *Contextualized Attention Gate* (CAG).                                                             | Non implementati.                                                                                                                         | Consentono interpretabilità avanzata, ma non sono essenziali per dimostrare il beneficio multimodale in questa esercitazione. |
+| **Parametri totali (≈)**    | \~ 12 M                                                                                                         | \~ 6 M                                                                                                                                    | Modello più leggero ⇒ addestramento più stabile in 10 epoch e riproducibile su GPU a disposizione.                                |
+
+
+Ho adottato MCAT-lite perché preserva il principio cardine di MCAT: far dialogare WSI e genomica dentro un Transformer eliminando i sotto-moduli più onerosi (co-attention+gate, doppio encoder, pooling dedicato). Ciò:
+
+-Riduce il numero di iper-parametri da ottimizzare.
+
+-Evita dipendenze biologiche esterne (pathway list).
+
+-Si integra senza modifiche profonde nell’infrastruttura ABMIL già fornita.
+
+Il compromesso è una minore interpretabilità (non abbiamo la heat-map di co-attenzione), ma i risultati preliminari mostrano comunque un incremento del c-index rispetto ad ABMIL singola modalità, confermando la validità della scelta lite per gli obiettivi del progetto.
+
+Si vuole far notare questo aspetto
+| Modello (arch.) | Modalità in input  | c-index **best-test** | Osservazioni rapide                                                                                                                                     |
+| --------------- | ------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ABMIL**       | **Genomics only**  | **0,678**             | La trascrittomica da sola resta la sorgente più informativa.                                                                                            |
+| **ABMIL**       | **WSI only**       | 0,648                 | Con lo stesso backbone ABMIL il segnale istologico “puro” è leggermente peggiore della genomica ma comunque competitivo.                                |
+| **MCAT-Lite**   | **WSI + Genomics** | 0,608                 | La versione semplificata di MCAT, con i parametri di default, non riesce (ancora) a superare la sola genomica → probabile carenza di capacità o tuning. |
+
+Il token “patch-bag” è un riassunto molto rozzo: senza la co-attenzione fine grained del full-MCAT rischia di diluire il segnale delle WSI.
+
+I pesi iniziali (hidden_dim 256, 2 layer) potrebbero non essere sufficienti.  
+
+La loss non dà ancora pesi differenziati alle due viste; un bilanciamento (o gating) potrebbe aiutare.
+
+## ESPERIMENTO USANDO MCAT_MultimodalTopK CON ALPHA=0, BIN=4, WSI + GENOMICS  
+
+- IPERPARAMETRI USATI  
+| Parametro            |  Valore | Descrizione sintetica                              |
+| -------------------- | :-----: | -------------------------------------------------- |
+| `input_dim`          |   1024  | Dimensione embedding patch (ResNet-50)             |
+| `genomics_input_dim` |  19 962 | Numero di geni (TPM log)                           |
+| `hidden_dim`         | **384** | Spazio latente del Transformer                     |
+| `n_heads`            |    8    | Teste di self-attention                            |
+| `n_layers`           |  **3**  | Blocchi encoder condivisi per entrambe le modalità |
+| `dropout`            |   0.10  | Drop-out sui layer feed-forward                    |
+| `output_dim`         |    4    | Bin temporali per la loss di sopravvivenza         |
+| `max_patches`        |  4 096  | Patch massimo (campionate) per WSI                 |
+| `k`                  |    —    | **(Linformer disattivato)** – self-attention piena |
+
+***Prestazioni ottenute***
+| Split / checkpoint |  c-index  | NLL-loss |
+| ------------------ | :-------: | :------: |
+| **train (best)**   | **0.705** |   314.1  |
+| **val (best)**     | **0.681** |   107.7  |
+| **test (best)**    | **0.659** |   125.8  |
+(Il modello “best” coincide con l’ultima epoch salvata (le metriche last sono identiche)).  
+
+## Osservazioni  
+-Generalizzazione: Il c-index scende di ≈ 0.024 dal train al val e di ≈ 0.022 dal val al test: lieve over-fitting ma sotto controllo.
+
+- Guadagno vs MCAT-Lite: 0.659 ⇢ +0.051 di c-index sul test (0.608). Le modifiche sono state:    
+ – hidden_dim più ampio
+ - +1 layer
+ - top-k patch = 512
+ - incrementano la capacità di modellare le WSI senza esplodere i parametri.
+
+Curve Kaplan-Meier – Separazione visibile fra i due gruppi di rischio (figura sopra); il p-value del log-rank migliora (0.013 < 0.05), indicando distinzione statisticamente significativa.
+![alt text](best_test.png)  
+
+Quindi dai risultati ottenuti possiamo affermare che MCAT_MultimodalTopK mostra un +0.051 pt rispetto a Lite; ritorniamo sopra WSI-only ma non ancora alla sola Genomica. Miglioramento dovuto a top-k patch e profondità extra.  
+Con pochi accorgimenti architetturali (top-k patch pooling e più profondità) il Transformer multimodale supera la versione lite, attestandosi però ancora sotto la sola genomica. Ciò suggerisce che:
+
+Il segnale WSI extra viene ora sfruttato ma non pienamente.
+
+Meccanismi dedicati alle interazioni (co-attention o Linformer) potrebbero portare il c-index oltre la genomica.
